@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { parseArgv, intOpt, isTeamsHost, safeUrl, pickChat, deployInfo, COMMANDS, ExitError } = require('../send.js');
+const { parseArgv, intOpt, isTeamsHost, safeUrl, pickChat, parseSince, collectMessages, deployInfo, COMMANDS, ExitError } = require('../send.js');
 
 test('isTeamsHost accepts the work client hosts only', () => {
   assert.ok(isTeamsHost('teams.microsoft.com'));
@@ -61,4 +61,24 @@ test('pickChat prefers exact, then an unambiguous substring', () => {
 
 test('deployInfo is exported', () => {
   assert.strictEqual(typeof deployInfo, 'function');
+});
+
+test('parseSince resolves to local midnight', () => {
+  const now = new Date(2026, 9, 7, 15, 30);
+  assert.deepStrictEqual(parseSince('today', now), new Date(2026, 9, 7));
+  assert.deepStrictEqual(parseSince('Yesterday', now), new Date(2026, 9, 6));
+  assert.deepStrictEqual(parseSince('2026-10-01', now), new Date(2026, 9, 1));
+  assert.deepStrictEqual(parseSince('yesterday', new Date(2026, 9, 1, 8)), new Date(2026, 8, 30));
+  assert.strictEqual(parseSince('2026-02-31', now), null);
+  assert.strictEqual(parseSince('last week', now), null);
+  assert.strictEqual(parseSince('', now), null);
+});
+
+test('collectMessages is exported', () => {
+  assert.strictEqual(typeof collectMessages, 'function');
+});
+
+test('parseArgv rejects an unknown option', () => {
+  assert.throws(() => parseArgv(['list', 'me', '--sinse', 'today']), ExitError);
+  assert.throws(() => parseArgv(['list', 'me', '--since today']), ExitError);
 });

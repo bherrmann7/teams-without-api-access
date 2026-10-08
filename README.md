@@ -14,7 +14,7 @@ your avatar.
 
 ```console
 $ teams-send "Alice Example" "year-end run finished, 0 differences"
-$ teams-send list "Alice Example" --limit 30
+$ teams-send list "Alice Example" --since today
 $ teams-send me "note to self"
 ```
 
@@ -107,13 +107,18 @@ To exercise an uncommitted edit, run `node send.js <args>` from the project dire
 | command | what it does |
 |---|---|
 | `teams-send <chat> "<message>"` | post a message (also reads stdin) |
-| `teams-send list <chat> [--limit N]` | print the most recent messages with timestamps |
+| `teams-send list <chat> [--limit N] [--since <day>]` | print recent messages with timestamps |
 | `teams-send chats` | list the chats that can be addressed |
 | `teams-send login` / `status` | sign in; report session and deploy state |
 | `teams-send shot` | screenshot the client (read-only, for debugging) |
 | `teams-send probe [--filter s]` | dump the DOM hooks the live client exposes |
 
 `<chat>` is a name from the Teams left rail. `me` is your own chat.
+
+`list` prints the last 20 messages by default. `--limit N` asks for more, and `--since today`,
+`--since yesterday` or `--since 2026-10-01` reads back to the start of that day; both scroll the
+chat's history as far as needed. If scrolling gives up before getting there, it says so on
+stderr instead of printing a silently short history.
 
 ### Safety
 
@@ -133,6 +138,7 @@ starts with `/`.
 ```
 --dry-run    (send) type the message, then clear it without sending
 --limit N    how many messages to print (list), or hooks (probe)
+--since DAY  (list) read back to the start of today, yesterday or YYYY-MM-DD
 --force      continue even if the opened chat's title does not match; also allows a
              message starting with "/"
 --quiet      suppress progress output on stderr
@@ -171,8 +177,8 @@ owner-only; keep them that way, and don't copy them anywhere.
   tests, which are the most durable hooks available, but Microsoft can still change them. Every
   non-obvious selector carries a comment saying why. `teams-send probe` shows what the live
   client currently exposes.
-- **`list` shows only the recent tail.** It prints the messages Teams renders on opening the
-  chat and does not scroll back through history.
+- **Scroll-back is paced by the client.** `list --since` wheels the history pane about once a
+  second, so a day of a busy chat takes several seconds and months of history takes minutes.
 - **Only the first page of chats is addressable.** Chats behind "See more" in the left rail are
   not reached. Channels in a team are not addressable at all.
 - **Images and attachments are not read.** They come through as empty messages.

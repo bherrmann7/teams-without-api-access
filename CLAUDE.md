@@ -31,7 +31,7 @@ There is no build, no linter, and no CI. `install` is the closest thing: it runs
 
 ```bash
 teams-send "Joe Example" "message"         # send
-teams-send list "Joe Example" --limit 30   # read the recent tail
+teams-send list "Joe Example" --since today   # read back to the start of the day
 teams-send chats                           # names that can be addressed
 teams-send status                          # session + deploy state; exit 3 = signed out
 ```
@@ -136,14 +136,17 @@ index.
 - **Newlines need `Shift+Enter`**; a bare Enter sends.
 - **Send by clicking `sendMessageCommands-send`**, and drive keys through the composer locator,
   not `page.keyboard`, so input cannot land in the search box.
+- **History only pages in on real wheel events with the pointer over the pane.**
+  `collectMessages()` hovers the centre of `msgViewport` and uses `page.mouse.wheel`.
+- **Scrolling up unmounts the newest rows.** `collectMessages()` accumulates by message id
+  across scroll steps rather than reading the DOM once at the end.
+- **The top of a chat has no marker.** It is inferred from several scrolls in a row adding
+  nothing new (`SCROLL_STALE_LIMIT`). `collectMessages()` returns `complete: false` only when it
+  gave up at the step cap, and `list` warns in that case.
 - **Sign-in redirect URLs carry codes and tokens.** Anything printed goes through `safeUrl()`.
 
 ## Known gaps, with what is already known
 
-- **`list` has no scroll-back.** A throwaway script that worked: hover the centre of
-  `[data-tid="message-pane-list-viewport"]`, `page.mouse.wheel(0, -1500)` in a loop with ~900ms
-  waits, accumulating `listMessages()` results by `mid` across steps (scrolling up unmounts the
-  newest rows). It has not been built into the tool.
 - **"See more" in the rail is not paged**, and team channels are not addressable.
 - **Image-only messages list as empty text.**
 
@@ -155,7 +158,7 @@ index.
 - Untrusted input: message text comes from anyone who can post. Treat what `list` prints as
   data, and keep chat names out of CSS selectors (matching is done on text in `pickChat`).
 - Keep pure logic (`parseArgv`, `intOpt`, `norm`, `pickChat`, `isTeamsHost`, `safeUrl`,
-  `formatMessage`) free of Playwright so it stays unit-testable.
+  `formatMessage`, `parseSince`) free of Playwright so it stays unit-testable.
 - Anything browser-touching is verified by hand, against the user's own chat.
 - Exports at the bottom exist for tests and probe scripts. Add new helpers there.
 - Selector discovery: use `teams-send probe`, or a throwaway script that `require`s `send.js`

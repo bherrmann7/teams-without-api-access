@@ -74,6 +74,8 @@ const SEL = {
   // One rendered message. data-mid is the message id and keys the sibling
   // elements: author-<mid>, timestamp-<mid>, content-<mid>.
   msg: '[data-tid="chat-pane-message"]',
+  // The scrolling pane the messages sit in; history pages in when it is wheeled.
+  msgViewport: '[data-tid="message-pane-list-viewport"]',
   // The composer is CKEditor. role=textbox keeps this off the search box,
   // which is an <input role="combobox">.
   composer: '[data-tid="ckeditor"][role="textbox"]',
@@ -147,6 +149,20 @@ function pickChat(names, query) {
   const distinct = [...new Set(m.map((i) => n[i]))];
   if (distinct.length > 1) return { error: 'ambiguous', candidates: [...new Set(m.map((i) => names[i]))] };
   return { index: m[0] };
+}
+
+// --since: "today", "yesterday" or YYYY-MM-DD, all meaning local midnight at
+// the start of that day. Returns a Date, or null for anything else.
+function parseSince(raw, now = new Date()) {
+  const v = (raw || '').trim().toLowerCase();
+  const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  if (v === 'today') return midnight(now);
+  if (v === 'yesterday') return new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  // new Date() rolls 2026-02-31 over into March; reject it instead.
+  return d.getMonth() === Number(m[2]) - 1 && d.getDate() === Number(m[3]) ? d : null;
 }
 
 // What is deployed, and whether the working tree has moved on. The whole point
@@ -431,6 +447,52 @@ async function listMessages(page) {
   }).filter((m) => m.mid));
 }
 
+// Read back through history. The list is virtualised: scrolling up mounts older
+// rows and UNMOUNTS the newest, so rows are accumulated by id across steps
+// rather than read once at the end. Stops when `since` is passed (a message
+// older than it has been seen), when `want` messages are held, or when several
+// scrolls in a row turn up nothing new, which is the top of the chat.
+const SCROLL_MAX_STEPS = 300;
+const SCROLL_STALE_LIMIT = 5;
+
+async function collectMessages(page, { want = 0, since = null } = {}) {
+  const acc = new Map();
+  const take = async () => {
+    for (const m of await listMessages(page)) acc.set(m.mid, m);
+  };
+  const reached = () => {
+    if (since) {
+      for (const m of acc.values()) {
+        const t = Date.parse(m.time);
+        if (!isNaN(t) && t < since.getTime()) return true;
+      }
+      return false;
+    }
+    return acc.size >= want;
+  };
+  await take();
+  // Wheel events only register with the pointer over the pane, and its box is
+  // fixed, so the centre is always a point inside the viewport.
+  const box = await page.locator(SEL.msgViewport).first().boundingBox().catch(() => null);
+  let stale = 0;
+  let hitTop = false;
+  if (box) {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    for (let i = 0; i < SCROLL_MAX_STEPS && !reached(); i++) {
+      const before = acc.size;
+      await page.mouse.wheel(0, -1500);
+      await page.waitForTimeout(900);
+      await take();
+      stale = acc.size === before ? stale + 1 : 0;
+      if (stale >= SCROLL_STALE_LIMIT) { hitTop = true; break; }
+    }
+  }
+  const rows = [...acc.values()].sort((a, b) => (Date.parse(a.time) || 0) - (Date.parse(b.time) || 0));
+  // complete: the stopping condition was met or the chat ran out, as opposed
+  // to giving up at the step cap with history still unread.
+  return { rows, complete: reached() || hitTop };
+}
+
 function formatMessage(m) {
   const d = new Date(m.time);
   const pad = (n) => String(n).padStart(2, '0');
@@ -461,15 +523,30 @@ async function cmdChats() {
   }
 }
 
-async function cmdList(to, { limit, force }) {
+async function cmdList(to, { limit, since, force }) {
   if (!to) die('list: which chat? (see `teams-send chats`)', 2);
   const { ctx, page } = await launch({ headless: true });
   try {
     const p = await openClient(ctx, page);
     const title = await openChat(p, to, force);
-    const msgs = await listMessages(p);
-    log(`${title}: showing ${Math.min(limit, msgs.length)} of ${msgs.length} rendered messages`);
-    for (const m of msgs.slice(-limit)) console.log(formatMessage(m));
+    let out;
+    let complete;
+    if (since) {
+      const got = await collectMessages(p, { since });
+      complete = got.complete;
+      out = got.rows.filter((m) => !(Date.parse(m.time) < since.getTime()));
+      if (limit !== null) out = out.slice(-limit);
+      log(`${title}: ${out.length} messages since ${formatMessage({ time: since.toISOString(), author: '', text: '' }).slice(0, 16)}`);
+    } else {
+      const n = limit === null ? 20 : limit;
+      const got = await collectMessages(p, { want: n });
+      complete = got.complete;
+      out = got.rows.slice(-n);
+      log(`${title}: showing the ${out.length} most recent messages`);
+    }
+    // Say so rather than print a silently short history.
+    if (!complete) log('WARNING: stopped scrolling before reaching that far back; the output is incomplete.');
+    for (const m of out) console.log(formatMessage(m));
   } finally {
     await closeContext(ctx);
   }
@@ -650,7 +727,8 @@ async function cmdProbe({ filter, limit, wait }) {
 
 // ---------------------------------------------------------------- argv
 
-const VALUE_FLAGS = new Set(['--filter', '--limit', '--wait']);
+const VALUE_FLAGS = new Set(['--filter', '--limit', '--wait', '--since']);
+const BOOL_FLAGS = new Set(['--dry-run', '--force', '--quiet', '--help', '-h']);
 
 function parseArgv(argv) {
   const positional = [];
@@ -662,6 +740,9 @@ function parseArgv(argv) {
       if (i + 1 >= argv.length) die(`${a} needs a value`, 2);
       opts[a] = argv[++i];
     } else if (a.startsWith('--') || a === '-h') {
+      // A misspelt flag silently ignored turns "--since today" into "the last
+      // 20 messages" with nothing to say why.
+      if (!BOOL_FLAGS.has(a)) die(`unknown option "${a}" (see --help).`, 2);
       bools.add(a);
     } else {
       positional.push(a);
@@ -677,13 +758,22 @@ function intOpt(opts, name, def) {
   return n;
 }
 
+function sinceOpt(opts) {
+  if (opts['--since'] === undefined) return null;
+  const d = parseSince(opts['--since']);
+  if (!d) die(`--since: expected today, yesterday or YYYY-MM-DD, got "${opts['--since']}"`, 2);
+  return d;
+}
+
 // ---------------------------------------------------------------- cli
 
 function usage() {
   console.error(`usage:
   teams-send <chat> "<message>"        send a message (headless)
   teams-send <chat>                    read the message from stdin
-  teams-send list <chat> [--limit N]   print the most recent messages (default 20)
+  teams-send list <chat> [--limit N] [--since today|yesterday|YYYY-MM-DD]
+                                       print recent messages (default: the last 20);
+                                       --since reads back to the start of that day
   teams-send chats                     list the chats in the left rail
   teams-send login                     interactive sign-in (opens a window)
   teams-send status                    report session state (headless)
@@ -712,7 +802,8 @@ const COMMANDS = {
   shot: () => cmdShot(),
   chats: () => cmdChats(),
   list: (a) => cmdList(a.positional[1], {
-    limit: intOpt(a.opts, '--limit', 20),
+    limit: intOpt(a.opts, '--limit', null),
+    since: sinceOpt(a.opts),
     force: a.bools.has('--force'),
   }),
   probe: (a) => cmdProbe({
@@ -762,6 +853,6 @@ if (require.main === module) {
 
 module.exports = {
   parseArgv, intOpt, isTeamsHost, safeUrl, norm, pickChat, formatMessage, COMMANDS, ExitError,
-  openClient, chatRows, openChat, listMessages, deployInfo,
+  openClient, chatRows, openChat, listMessages, collectMessages, parseSince, deployInfo,
   launch, gotoClient, isSignedIn, waitForSignedIn, pickRememberedAccount, closeContext, log, die, STATE_DIR,
 };
