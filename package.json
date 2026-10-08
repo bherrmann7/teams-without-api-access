@@ -1,0 +1,33 @@
+{
+  "name": "teams-without-api-access",
+  "version": "0.1.0",
+  "description": "Read and post Microsoft Teams chats as yourself from the command line by driving the Teams web client \u2014 no Graph app registration.",
+  "type": "commonjs",
+  "license": "MIT",
+  "bin": {
+    "teams-send": "./send.js"
+  },
+  "files": [
+    "send.js",
+    "install",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "microsoft-teams",
+    "teams",
+    "cli",
+    "playwright",
+    "no-api-token",
+    "automation"
+  ],
+  "dependencies": {
+    "playwright": "1.55.0"
+  },
+  "scripts": {
+    "test": "node --test test/unit.test.js"
+  }
+}
